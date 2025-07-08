@@ -103,6 +103,34 @@ Command-Line Arguments
 ![image](https://github.com/user-attachments/assets/4897f5cb-30a3-4b3f-be5f-8d5cb76d6d97)
 *Note: The screenshot shows an older version. New features like more languages and output options are now available.*
 
+Generated Artifacts
+The analyzer stores its generated data (cache and vector database for Q&A) outside of the project you are analyzing. This keeps your project directory clean.
+
+1.  **`Analysis Reports` Directory**: A folder named `Analysis Reports` is created in the same directory where the `analyzer.py` script is located. If it doesn't exist, it will be created automatically (provided the script has write permissions to its own directory).
+2.  **Session-Specific Subdirectory**: Inside `Analysis Reports`, a unique subdirectory is created for each analysis run. This subdirectory is named using the pattern: `ProjectName_YYYYMMDD-HHMMSS` (e.g., `my-app_20231027-153000`).
+    *   `ProjectName` is derived from the name of the directory specified in the `--path` argument.
+    *   `YYYYMMDD-HHMMSS` is the timestamp of when the analysis started.
+3.  **Artifacts within Session Directory**: Inside this session-specific subdirectory, you will find:
+    *   `.analyzer_cache.json`: Stores cached analysis results for individual files to speed up subsequent runs for this specific analysis session.
+    *   `code_db/`: A directory containing the vector database used for the interactive Q&A session for this analysis.
+
+**Example Structure:**
+```
+/path/to/Code_Analysis_Folder/
+├── analyzer.py
+├── Analysis Reports/
+│   ├── MyProject_20231026-100000/
+│   │   ├── .analyzer_cache.json
+│   │   └── code_db/
+│   │       └── ... (ChromaDB files)
+│   └── AnotherProject_20231027-110000/
+│       ├── .analyzer_cache.json
+│       └── code_db/
+└── ... (other files)
+```
+
+You can safely delete any session-specific subdirectory (e.g., `MyProject_20231026-100000/`) if you no longer need its cache or Q&A database. Each analysis run is independent due to the timestamped folder.
+
 How It Works
 The tool operates in three main stages:
 

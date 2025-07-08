@@ -19,21 +19,33 @@ from langchain.chains import RetrievalQA
 
 # --- Caching Functions ---
 
-CACHE_FILE = ".analyzer_cache.json"
+CACHE_FILENAME = ".analyzer_cache.json" # Renamed to avoid confusion if global CACHE_FILE was used
 
-def load_cache():
-    """Loads the analysis cache from a JSON file."""
-    if not os.path.exists(CACHE_FILE):
+def load_cache(code_path: str):
+    """Loads the analysis cache from a JSON file in the specified code_path."""
+    cache_file_path = os.path.join(code_path, CACHE_FILENAME)
+    if not os.path.exists(cache_file_path):
+        if args.debug:
+            print(f"  [DEBUG Cache] Cache file not found at {cache_file_path}, creating new cache.")
         return {}
-    with open(CACHE_FILE, 'r') as f:
+    if args.debug:
+        print(f"  [DEBUG Cache] Attempting to load cache from {cache_file_path}")
+    with open(cache_file_path, 'r') as f:
         try:
             return json.load(f)
         except json.JSONDecodeError:
+            if args.debug:
+                print(f"  [DEBUG Cache] JSONDecodeError reading cache from {cache_file_path}. Returning empty cache.")
             return {}
 
-def save_cache(cache):
-    """Saves the analysis cache to a JSON file."""
-    with open(CACHE_FILE, 'w') as f:
+def save_cache(cache, code_path: str):
+    """Saves the analysis cache to a JSON file in the specified code_path."""
+    cache_file_path = os.path.join(code_path, CACHE_FILENAME)
+    if args.debug:
+        print(f"  [DEBUG Cache] Saving cache to {cache_file_path}")
+    # Ensure the base directory (code_path) exists, though it should if we're analyzing it.
+    # os.makedirs(os.path.dirname(cache_file_path), exist_ok=True) # Not strictly needed if file is in code_path root
+    with open(cache_file_path, 'w') as f:
         json.dump(cache, f, indent=2)
 
 def get_file_hash(file_path):
@@ -104,10 +116,10 @@ def get_changed_files_git(repo_path: str, debug: bool = False):
 
 # --- Main Analysis Script ---
 
-def generate_full_report(code_path: str, llm, language: str = "python", debug: bool = False):
+def generate_full_report(code_path: str, artifact_path: str, llm, language: str = "python", debug: bool = False):
     """
-    Loads a codebase, analyzes it using a parallelized map-reduce strategy with caching,
-    and returns a final comprehensive report and the code chunks.
+    Loads a codebase from code_path, analyzes it using a parallelized map-reduce strategy with caching
+    (cache stored in artifact_path), and returns a final comprehensive report and the code chunks.
     """
     print("--- Part 1: Starting Map-Reduce Full Report Generation ---")
 
@@ -205,7 +217,9 @@ def generate_full_report(code_path: str, llm, language: str = "python", debug: b
         sys.exit(1)
 
     # Load cache and identify files needing analysis
-    cache = load_cache()
+    if args.debug:
+        print(f"  [DEBUG] Artifact path for cache: {os.path.abspath(artifact_path)}")
+    cache = load_cache(artifact_path) # Pass artifact_path for cache
     files_to_analyze_live = []
     cached_analyses = []
     all_docs = []
@@ -280,7 +294,7 @@ def generate_full_report(code_path: str, llm, language: str = "python", debug: b
         for file_hash, analyses in newly_analyzed_data.items():
             combined_analysis = "\n---\n".join(analyses)
             cache[file_hash] = combined_analysis
-        save_cache(cache)
+        save_cache(cache, artifact_path) # Pass artifact_path for cache
 
     # REDUCE STEP (using all analyses - cached and new)
     print("\n[Step 4] Reducing all analyses into the final report...")
@@ -319,19 +333,25 @@ def generate_full_report(code_path: str, llm, language: str = "python", debug: b
 
     return report_text, all_docs # Return original text report for Q&A context
 
-def create_vector_store(chunks, embeddings):
-    """Creates and persists a vector store from code chunks for semantic search."""
+def create_vector_store(chunks, embeddings, code_path: str):
+    """Creates and persists a vector store from code chunks for semantic search in the specified code_path."""
     print("\n--- Part 2: Creating Vector Store for Q&A ---")
     if not chunks:
         print("No code chunks available to create a vector store.")
         return None
+
+    persist_directory = os.path.join(code_path, "code_db")
+    if args.debug:
+        print(f"  [DEBUG Vector Store] Persisting vector store to: {persist_directory}")
+
     try:
-        print("[Step 1] Creating vector store from chunks...")
-        vector_store = Chroma.from_documents(documents=chunks, embedding=embeddings, persist_directory="./code_db")
-        print("Vector store created and saved to './code_db'.")
+        print(f"[Step 1] Creating/loading vector store from chunks at {persist_directory}...")
+        # This will create the directory if it doesn't exist.
+        vector_store = Chroma.from_documents(documents=chunks, embedding=embeddings, persist_directory=persist_directory)
+        print(f"Vector store created/updated and saved to '{persist_directory}'.")
         return vector_store
     except Exception as e:
-        print(f"An error occurred during vector store creation: {e}")
+        print(f"An error occurred during vector store creation at {persist_directory}: {e}")
         return None
 
 def start_qa_session(llm, vector_store):
@@ -374,6 +394,30 @@ if __name__ == "__main__":
     parser.add_argument("--output-file", type=str, default=None, help="Optional path to save the report. If not provided, prints to console.")
     args = parser.parse_args()
 
+    # --- Determine and create artifact storage directory ---
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    analysis_reports_base_dir = os.path.join(script_dir, "Analysis Reports")
+
+    project_name_abs = os.path.abspath(args.path) # Get absolute path for consistent naming
+    project_name = os.path.basename(project_name_abs)
+    if not project_name: # Handles cases like args.path = "/" or "C:\"
+        project_name = "root"
+    elif project_name == ".": # Handles args.path = "."
+        project_name = os.path.basename(os.getcwd())
+
+
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    # Replace potential problematic characters in project_name for directory naming
+    safe_project_name = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in project_name)
+
+    artifact_dir_name = f"{safe_project_name}_{timestamp}"
+    project_specific_artifact_dir = os.path.join(analysis_reports_base_dir, artifact_dir_name)
+
+    os.makedirs(project_specific_artifact_dir, exist_ok=True)
+    if args.debug:
+        print(f"  [DEBUG Artifacts] Artifacts for this session will be stored in: {project_specific_artifact_dir}")
+    # --- End artifact storage directory ---
+
     llm, embeddings = None, None
 
     if args.llm_provider == "gemini":
@@ -406,13 +450,23 @@ if __name__ == "__main__":
             print(f"Error initializing custom LLM API: {e}")
             sys.exit(1)
 
-    summary_report, all_docs = generate_full_report(code_path=args.path, llm=llm, language=args.language, debug=args.debug)
+    summary_report, all_docs = generate_full_report(
+        code_path=args.path,
+        artifact_path=project_specific_artifact_dir, # Pass the new artifact storage path
+        llm=llm,
+        language=args.language,
+        debug=args.debug
+    )
 
     if all_docs:
         # Corrected splitting for vector store to use all_docs from generate_full_report
         # which already contains Document objects from TextLoader
         # No further splitting by language should be needed here if generate_full_report handles it
-        db = create_vector_store(all_docs, embeddings) # Pass all_docs directly
+        db = create_vector_store(
+            all_docs,
+            embeddings,
+            project_specific_artifact_dir # Pass the new artifact storage path
+        )
         if db:
             start_qa_session(llm=llm, vector_store=db)
     else:
