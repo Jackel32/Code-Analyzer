@@ -467,7 +467,7 @@ if __name__ == "__main__":
 
     summary_report, all_docs = generate_full_report(
         code_path=args.path,
-        artifact_path=project_specific_artifact_dir, # Pass the new artifact storage path
+        artifact_path=project_artifact_dir, # Pass the new artifact storage path
         llm=llm,
         language=args.language,
         debug=args.debug
@@ -480,7 +480,7 @@ if __name__ == "__main__":
         db = create_vector_store(
             all_docs,
             embeddings,
-            project_specific_artifact_dir # Pass the new artifact storage path
+            project_artifact_dir # Pass the new artifact storage path
         )
         if db:
             start_qa_session(llm=llm, vector_store=db)
