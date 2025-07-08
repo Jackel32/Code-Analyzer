@@ -100,9 +100,6 @@ Command-Line Arguments
 * `--output-format`: (Optional) The output format for the report. Choices: `text`, `json`, `html`. Defaults to `text`.
 * `--output-file`: (Optional) Path to save the report. If not provided, the report is printed to the console.
 
-![image](https://github.com/user-attachments/assets/4897f5cb-30a3-4b3f-be5f-8d5cb76d6d97)
-*Note: The screenshot shows an older version. New features like more languages and output options are now available.*
-
 Generated Artifacts
 The analyzer stores its generated data (cache, vector database, and report outputs) outside of the project you are analyzing. This helps keep your project directory clean and organizes analysis data centrally.
 
