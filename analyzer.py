@@ -3,6 +3,7 @@ import sys
 import time
 import json
 import hashlib # Import for file hashing
+import subprocess # Import for Git integration
 import threading
 import argparse
 import concurrent.futures
@@ -43,6 +44,64 @@ def get_file_hash(file_path):
         hasher.update(buf)
     return hasher.hexdigest()
 
+# --- Git Integration ---
+def get_changed_files_git(repo_path: str, debug: bool = False):
+    """Gets a list of changed files in a Git repository since the last commit."""
+    try:
+        # Check if it's a git repository
+        subprocess.run(["git", "-C", repo_path, "rev-parse"], check=True, capture_output=True, timeout=5)
+
+        # Get changed files (staged and unstaged)
+        staged_result = subprocess.run(
+            ["git", "-C", repo_path, "diff", "--name-only", "--cached"],
+            capture_output=True, text=True, check=True, timeout=5
+        )
+        unstaged_result = subprocess.run(
+            ["git", "-C", repo_path, "diff", "--name-only"],
+            capture_output=True, text=True, check=True, timeout=5
+        )
+        # Get untracked files
+        untracked_result = subprocess.run(
+            ["git", "-C", repo_path, "ls-files", "--others", "--exclude-standard"],
+            capture_output=True, text=True, check=True, timeout=5
+        )
+
+        changed_files = set()
+        if staged_result.stdout:
+            changed_files.update(staged_result.stdout.strip().split('\n'))
+        if unstaged_result.stdout:
+            changed_files.update(unstaged_result.stdout.strip().split('\n'))
+        if untracked_result.stdout:
+            changed_files.update(untracked_result.stdout.strip().split('\n'))
+
+        # Filter out empty strings that might result from empty stdout
+        changed_files = {f for f in changed_files if f}
+
+        if debug:
+            print(f"  [DEBUG Git] Staged: {staged_result.stdout.strip().splitlines() if staged_result.stdout else 'None'}")
+            print(f"  [DEBUG Git] Unstaged: {unstaged_result.stdout.strip().splitlines() if unstaged_result.stdout else 'None'}")
+            print(f"  [DEBUG Git] Untracked: {untracked_result.stdout.strip().splitlines() if untracked_result.stdout else 'None'}")
+            print(f"  [DEBUG Git] Combined changed: {list(changed_files)}")
+
+        return list(changed_files)
+    except subprocess.CalledProcessError as e:
+        if debug:
+            print(f"  [DEBUG Git] Git command error: {e.cmd} returned {e.returncode}")
+            if e.stdout:
+                print(f"  [DEBUG Git] Stdout: {e.stdout}")
+            if e.stderr:
+                print(f"  [DEBUG Git] Stderr: {e.stderr}")
+        # This can happen if it's not a git repo or git is not installed
+        return None
+    except FileNotFoundError:
+        if debug:
+            print("  [DEBUG Git] Git command not found. Is Git installed and in PATH?")
+        return None
+    except subprocess.TimeoutExpired as e:
+        if debug:
+            print(f"  [DEBUG Git] Git command timed out: {e.cmd}")
+        return None
+
 # --- Main Analysis Script ---
 
 def generate_full_report(code_path: str, llm, language: str = "python", debug: bool = False):
@@ -52,39 +111,67 @@ def generate_full_report(code_path: str, llm, language: str = "python", debug: b
     """
     print("--- Part 1: Starting Map-Reduce Full Report Generation ---")
 
-    LANGUAGE_MAP = {"python": Language.PYTHON, "csharp": Language.CSHARP, "cpp": Language.CPP}
+    LANGUAGE_MAP = {
+        "python": Language.PYTHON, "csharp": Language.CSHARP, "cpp": Language.CPP,
+        "java": Language.JAVA, "go": Language.GO, "rust": Language.RUST
+    }
     GLOB_MAP = {
         "python": ["*.py"],
         "csharp": ["*.cs"],
         "cpp": ["*.cpp", "*.h", "*.hpp"],
+        "java": ["*.java"],
+        "go": ["*.go"],
+        "rust": ["*.rs"],
     }
-    
+
     if language not in LANGUAGE_MAP:
         print(f"Error: Unsupported language '{language}'.")
         sys.exit(1)
 
     print(f"\n[Step 1] Scanning for {language} files in '{code_path}'...")
     try:
-        from glob import glob
-        # Use a set to automatically handle duplicates
-        files_to_process_set = set()
-        # Correctly walk the directory and apply non-recursive globs
-        for dirpath, _, _ in os.walk(code_path):
-            for pattern in GLOB_MAP[language]:
-                files_to_process_set.update(glob(os.path.join(dirpath, pattern)))
-        
-        files_to_process = list(files_to_process_set)
+        files_to_process = []
+        if hasattr(args, 'use_git') and args.use_git: # Check if args is accessible and use_git is true
+            print("  -> Attempting to use Git to find changed files.")
+            git_files = get_changed_files_git(code_path, debug)
+            if git_files is not None:
+                print(f"  -> Found {len(git_files)} changed files via Git (pre-filter).")
+                files_to_process = [
+                    os.path.join(code_path, f) # Ensure full path
+                    for f in git_files
+                    if os.path.splitext(f)[1] in GLOB_MAP.get(language, []) and os.path.isfile(os.path.join(code_path, f))
+                ]
+                if files_to_process:
+                    print(f"  -> Analyzing {len(files_to_process)} {language} file(s) changed according to Git.")
+                else:
+                    print(f"  -> No changed {language} files found via Git, or an error occurred. Falling back to full scan.")
+            else:
+                print("  -> Git not available or not a Git repository. Falling back to full scan.")
+
+        if not files_to_process: # Fallback to full scan if Git not used, or it returned no relevant files
+            if not (hasattr(args, 'use_git') and args.use_git): # Only print fallback message if not already printed
+                 print("  -> Performing full scan (not using Git or Git found no relevant files).")
+            from glob import glob
+            files_to_process_set = set()
+            for dirpath, _, _ in os.walk(code_path):
+                for pattern in GLOB_MAP[language]:
+                    # Ensure pattern is correctly joined with dirpath
+                    files_to_process_set.update(glob(os.path.join(dirpath, pattern)))
+
+            # Filter to ensure only files of the specified language are included
+            files_to_process = [f for f in list(files_to_process_set) if os.path.isfile(f) and os.path.splitext(f)[1] in GLOB_MAP[language]]
+
 
         if debug:
-            print("\n--- Discovered Files (DEBUG) ---")
+            print("\n--- Files to Process (DEBUG) ---")
             for f_path in files_to_process:
                 print(f"  -> {f_path}")
-            print("--------------------------------\n")
+            print("----------------------------------\n")
 
         if not files_to_process:
-            print(f"Warning: No {language} files found in '{code_path}'.")
+            print(f"Warning: No {language} files found in '{code_path}' (after potential Git filtering).")
             return None, []
-        print(f"Found {len(files_to_process)} file(s) to analyze.")
+        print(f"Found {len(files_to_process)} file(s) to analyze for {language}.")
     except Exception as e:
         print(f"Error finding documents in '{code_path}': {e}")
         sys.exit(1)
@@ -116,7 +203,7 @@ def generate_full_report(code_path: str, llm, language: str = "python", debug: b
     newly_analyzed_data = {}
     if files_to_analyze_live:
         live_docs = [TextLoader(fp).load()[0] for fp, _ in files_to_analyze_live]
-        
+
         print("\n[Step 2] Splitting new/modified documents into code chunks...")
         splitter = RecursiveCharacterTextSplitter.from_language(language=LANGUAGE_MAP[language], chunk_size=1000, chunk_overlap=150)
         chunks = splitter.split_documents(live_docs)
@@ -124,12 +211,12 @@ def generate_full_report(code_path: str, llm, language: str = "python", debug: b
 
         map_template = f"Analyze the following chunk of {language} code: {{text}}"
         map_prompt = PromptTemplate.from_template(map_template)
-        
+
         print(f"\n[Step 3] Running live analysis on {len(chunks)} chunks...")
         start_time = time.time()
         output_parser = StrOutputParser()
         map_chain = map_prompt | llm | output_parser
-        
+
         with concurrent.futures.ThreadPoolExecutor() as executor:
             # Map each future back to its original file hash for correct caching
             future_to_hash = {}
@@ -148,7 +235,7 @@ def generate_full_report(code_path: str, llm, language: str = "python", debug: b
                     if file_hash not in newly_analyzed_data:
                         newly_analyzed_data[file_hash] = []
                     newly_analyzed_data[file_hash].append(result)
-                    
+
                     elapsed_time = time.time() - start_time
                     mins, secs = divmod(int(elapsed_time), 60)
                     progress_indicator = f"  -> Mapping... [{mins:02d}:{secs:02d}] Progress: {i + 1}/{len(chunks)} chunks analyzed."
@@ -171,17 +258,38 @@ def generate_full_report(code_path: str, llm, language: str = "python", debug: b
     print("\n[Step 4] Reducing all analyses into the final report...")
     all_analyses = cached_analyses + ["\n---\n".join(analyses) for analyses in newly_analyzed_data.values()]
     doc_summaries = "\n---\n".join(all_analyses)
-    
+
     reduce_template = "Synthesize these code analyses into a single report... {doc_summaries}"
     reduce_prompt = PromptTemplate.from_template(reduce_template)
     reduce_chain = reduce_prompt | llm | StrOutputParser()
-    report = reduce_chain.invoke({"doc_summaries": doc_summaries})
-    
-    print("\n--- Part 1 Complete: Full Analysis Report ---")
-    print(report)
-    print("--- End of Report ---")
-    
-    return report, all_docs
+    report_text = reduce_chain.invoke({"doc_summaries": doc_summaries})
+
+    # Handle different output formats
+    if args.output_format == "json":
+        report_output = json.dumps({"report": report_text}, indent=2)
+    elif args.output_format == "html":
+        # Simple HTML formatting, can be expanded
+        report_output = f"<html><body><h1>Code Analysis Report</h1><pre>{report_text}</pre></body></html>"
+    else: # Default to text
+        report_output = report_text
+
+    if not args.output_file:
+        print("\n--- Part 1 Complete: Full Analysis Report ---")
+        print(report_output)
+        print("--- End of Report ---")
+    else:
+        try:
+            with open(args.output_file, 'w') as f:
+                f.write(report_output)
+            print(f"\n--- Part 1 Complete: Full Analysis Report saved to {args.output_file} ---")
+        except IOError as e:
+            print(f"Error writing report to file {args.output_file}: {e}")
+            # Fallback to printing to console
+            print("\n--- Part 1 Complete: Full Analysis Report ---")
+            print(report_output)
+            print("--- End of Report ---")
+
+    return report_text, all_docs # Return original text report for Q&A context
 
 def create_vector_store(chunks, embeddings):
     """Creates and persists a vector store from code chunks for semantic search."""
@@ -225,12 +333,17 @@ def start_qa_session(llm, vector_store):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analyze a codebase with LangChain.")
     parser.add_argument("--path", type=str, default=".", help="The path to the codebase directory.")
-    parser.add_argument("--language", type=str, default="python", choices=["python", "csharp", "cpp"], help="The programming language of the codebase.")
+    parser.add_argument("--language", type=str, default="python",
+                        choices=["python", "csharp", "cpp", "java", "go", "rust"],
+                        help="The programming language of the codebase.")
     parser.add_argument("--llm-provider", type=str, default="gemini", choices=["gemini", "custom"], help="The LLM provider to use.")
     parser.add_argument("--model-name", type=str, default="gpt-4", help="The model name for a custom LLM provider.")
     parser.add_argument("--endpoint-url", type=str, default=None, help="The API endpoint URL for a custom LLM provider.")
     parser.add_argument("--api-key", type=str, default=None, help="The API key for a custom LLM provider.")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode to print found file paths.")
+    parser.add_argument("--use-git", action="store_true", help="Analyze only changed files reported by Git.")
+    parser.add_argument("--output-format", type=str, default="text", choices=["text", "json", "html"], help="The output format for the report.")
+    parser.add_argument("--output-file", type=str, default=None, help="Optional path to save the report. If not provided, prints to console.")
     args = parser.parse_args()
 
     llm, embeddings = None, None
@@ -248,12 +361,12 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Error initializing Google Gemini API: {e}")
             sys.exit(1)
-            
+
     elif args.llm_provider == "custom":
         print("Using a custom OpenAI-compatible LLM provider.")
         custom_api_key = os.getenv("CUSTOM_API_KEY") or args.api_key
         custom_endpoint_url = os.getenv("CUSTOM_API_URL") or args.endpoint_url
-        
+
         if not custom_api_key or not custom_endpoint_url:
             print("Error: For custom provider, set CUSTOM_API_KEY/CUSTOM_API_URL or pass --api-key/--endpoint-url.")
             sys.exit(1)
@@ -268,7 +381,10 @@ if __name__ == "__main__":
     summary_report, all_docs = generate_full_report(code_path=args.path, llm=llm, language=args.language, debug=args.debug)
 
     if all_docs:
-        db = create_vector_store(all_docs, embeddings)
+        # Corrected splitting for vector store to use all_docs from generate_full_report
+        # which already contains Document objects from TextLoader
+        # No further splitting by language should be needed here if generate_full_report handles it
+        db = create_vector_store(all_docs, embeddings) # Pass all_docs directly
         if db:
             start_qa_session(llm=llm, vector_store=db)
     else:
