@@ -128,6 +128,11 @@ def generate_full_report(code_path: str, llm, language: str = "python", debug: b
         print(f"Error: Unsupported language '{language}'.")
         sys.exit(1)
 
+    # Derive expected extensions for direct checking
+    expected_extensions = [pattern.replace('*.', '.') for pattern in GLOB_MAP.get(language, [])]
+    if debug:
+        print(f"  [DEBUG] Expected extensions for {language}: {expected_extensions}")
+
     print(f"\n[Step 1] Scanning for {language} files in '{code_path}'...")
     try:
         files_to_process = []
@@ -139,7 +144,7 @@ def generate_full_report(code_path: str, llm, language: str = "python", debug: b
                 files_to_process = [
                     os.path.join(code_path, f) # Ensure full path
                     for f in git_files
-                    if os.path.splitext(f)[1] in GLOB_MAP.get(language, []) and os.path.isfile(os.path.join(code_path, f))
+                    if os.path.splitext(f)[1] in expected_extensions and os.path.isfile(os.path.join(code_path, f))
                 ]
                 if files_to_process:
                     print(f"  -> Analyzing {len(files_to_process)} {language} file(s) changed according to Git.")
@@ -149,21 +154,44 @@ def generate_full_report(code_path: str, llm, language: str = "python", debug: b
                 print("  -> Git not available or not a Git repository. Falling back to full scan.")
 
         if not files_to_process: # Fallback to full scan if Git not used, or it returned no relevant files
-            if not (hasattr(args, 'use_git') and args.use_git): # Only print fallback message if not already printed
+            if not (hasattr(args, 'use_git') and args.use_git):
                  print("  -> Performing full scan (not using Git or Git found no relevant files).")
             from glob import glob
             files_to_process_set = set()
-            for dirpath, _, _ in os.walk(code_path):
-                for pattern in GLOB_MAP[language]:
-                    # Ensure pattern is correctly joined with dirpath
-                    files_to_process_set.update(glob(os.path.join(dirpath, pattern)))
+            if debug:
+                print(f"  [DEBUG Full Scan] Walking code_path: {os.path.abspath(code_path)}")
+            for dirpath, dirnames, filenames in os.walk(code_path):
+                if debug:
+                    print(f"  [DEBUG Full Scan] In dirpath: {dirpath}")
+                for lang_pattern in GLOB_MAP.get(language, []):
+                    if debug:
+                        print(f"  [DEBUG Full Scan] Applying glob pattern: {lang_pattern} in {dirpath}")
+                    # Glob for files directly in dirpath matching the pattern
+                    # os.path.join is crucial here
+                    matched_files = glob(os.path.join(dirpath, lang_pattern))
+                    if debug and matched_files:
+                        print(f"  [DEBUG Full Scan] Glob matched: {matched_files}")
+                    for f_path in matched_files:
+                        # Ensure it's a file and not a directory that somehow matched the pattern
+                        if os.path.isfile(f_path):
+                            files_to_process_set.add(os.path.abspath(f_path)) # Store absolute paths
 
-            # Filter to ensure only files of the specified language are included
-            files_to_process = [f for f in list(files_to_process_set) if os.path.isfile(f) and os.path.splitext(f)[1] in GLOB_MAP[language]]
+            if debug:
+                print(f"  [DEBUG Full Scan] Initial files_to_process_set: {files_to_process_set}")
+
+            # Filter to ensure only files of the specified language are included and they are actual files
+            # This secondary check is a bit redundant if glob and isfile work correctly above,
+            # but ensures consistency and correctness of extension matching.
+            files_to_process = [
+                f for f in list(files_to_process_set)
+                if os.path.isfile(f) and os.path.splitext(f)[1] in expected_extensions
+            ]
+            if debug:
+                print(f"  [DEBUG Full Scan] Filtered files_to_process: {files_to_process}")
 
 
         if debug:
-            print("\n--- Files to Process (DEBUG) ---")
+            print("\n--- Files to Process (FINAL DEBUG) ---")
             for f_path in files_to_process:
                 print(f"  -> {f_path}")
             print("----------------------------------\n")
