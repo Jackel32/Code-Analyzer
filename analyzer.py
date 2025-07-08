@@ -343,19 +343,48 @@ def load_config():
     debug_mode = hasattr(args, 'debug') and args.debug # Check if args is defined
     if not debug_mode and "debug_mode_by_default" in config: # Fallback to config if args not parsed yet
         debug_mode = config["debug_mode_by_default"]
-    if debug_mode:
-        if loaded_path: print(f"  [Config] Loaded configuration from: {loaded_path}")
-        else: print("  [Config] No configuration file found. Using default settings.")
+
+    if not loaded_path:
+        # If no config file was found anywhere, generate the default one at the primary user path.
+        user_primary_config_path = os.path.expanduser("~/.config/analyzer/config.json")
+        # Check if it was the user_primary_config_path that was missing, or if others were also checked and missed.
+        # This logic ensures we only auto-create if *no* config was found.
+        # The current loop structure loads the first one found. If user_primary_config_path is empty
+        # but <script_dir>/config.json exists, loaded_path would be set.
+        # So, we need to be more specific: create only if user_primary_config_path itself doesn't exist
+        # AND no other config took precedence.
+        # A simpler way: if after checking all paths, loaded_path is still None, then create.
+        generate_default_config_file(user_primary_config_path) # Create it at the primary user location
+        # Now, try to load it again (or just use DEFAULT_CONFIG as `config` is already a copy)
+        # For consistency, let's re-evaluate `config` if a new file was created.
+        if os.path.exists(user_primary_config_path):
+            try:
+                with open(user_primary_config_path, 'r') as f: config.update(json.load(f))
+                loaded_path = user_primary_config_path # Mark it as loaded
+                if debug_mode: print(f"  [Config] Loaded newly generated default config from: {loaded_path}")
+            except Exception as e:
+                if debug_mode: print(f"  [Config] Error loading newly generated config {user_primary_config_path}: {e}. Using defaults.")
+        # If generation or re-load failed, `config` remains DEFAULT_CONFIG or whatever was loaded before this block.
+
+    if debug_mode: # Print status after potential generation
+        if loaded_path: print(f"  [Config] Using configuration from: {loaded_path}")
+        else: print("  [Config] Using default settings (no config file found or loaded after generation attempt).")
+
     return config
 
 def generate_default_config_file(path_to_save=os.path.expanduser("~/.config/analyzer/config.json")):
-    os.makedirs(os.path.dirname(path_to_save), exist_ok=True)
-    with open(path_to_save, 'w') as f: json.dump(DEFAULT_CONFIG, f, indent=2)
-    print(f"Generated default configuration file at: {path_to_save}")
+    """Generates a default config.json file, ensuring the directory exists."""
+    try:
+        os.makedirs(os.path.dirname(path_to_save), exist_ok=True)
+        with open(path_to_save, 'w') as f: json.dump(DEFAULT_CONFIG, f, indent=2)
+        print(f"  [Config] Generated default configuration file at: {path_to_save}")
+    except Exception as e:
+        print(f"  [Config] Error generating default configuration file at {path_to_save}: {e}")
+
 
 # --- Main Execution Block ---
 if __name__ == "__main__":
-    config = load_config()
+    config = load_config() # This will now auto-generate if needed and not found.
     parser = argparse.ArgumentParser(description="Analyze a codebase with LangChain.",
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--path", type=str, default=".", help="Path to codebase.")
@@ -368,17 +397,17 @@ if __name__ == "__main__":
     parser.add_argument("--use-git", action="store_true", default=config.get("use_git_by_default"), help="Analyze Git changed files.")
     parser.add_argument("--output-format", type=str, default=config.get("output_format"), choices=["text", "json", "html"], help="Report output format.")
     parser.add_argument("--output-file", type=str, default=None, help="Save report to file (optional).")
-    parser.add_argument("--create-config", action="store_true", help="Create default config and exit.")
+    # REMOVED: parser.add_argument("--create-config", action="store_true", help="Create default config and exit.")
     # Add CLI args for static analysis tool toggles, overriding config
     parser.add_argument("--pylint-enabled", dest='pylint_enabled_cli', action=argparse.BooleanOptionalAction, help="Enable/Disable Pylint (overrides config).")
     parser.add_argument("--cppcheck-enabled", dest='cppcheck_enabled_cli', action=argparse.BooleanOptionalAction, help="Enable/Disable Cppcheck (overrides config).")
 
-
     args = parser.parse_args()
 
-    if args.create_config:
-        generate_default_config_file()
-        sys.exit(0)
+    # REMOVED: create-config handling block
+    # if args.create_config:
+    #     generate_default_config_file() # This function is now called by load_config if needed
+    #     sys.exit(0)
 
     # Update config with CLI overrides for static analysis tools
     if args.pylint_enabled_cli is not None: config["pylint_enabled"] = args.pylint_enabled_cli
