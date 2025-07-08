@@ -315,21 +315,34 @@ def generate_full_report(code_path: str, artifact_path: str, llm, language: str 
     else: # Default to text
         report_output = report_text
 
-    if not args.output_file:
+    if args.output_file:
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        # Treat args.output_file as a base filename.
+        base_output_filename = os.path.basename(args.output_file)
+
+        # Construct the new filename with timestamp
+        timestamped_filename = f"{timestamp}_{base_output_filename}"
+
+        # Final path for the report file within the project's artifact directory
+        final_report_path = os.path.join(artifact_path, timestamped_filename)
+
+        try:
+            # artifact_path (project_artifact_dir) should already be created in main.
+            # os.makedirs(artifact_path, exist_ok=True) # Redundant if main creates it.
+            with open(final_report_path, 'w') as f:
+                f.write(report_output)
+            print(f"\n--- Part 1 Complete: Full Analysis Report saved to {final_report_path} ---")
+        except IOError as e:
+            print(f"Error writing report to file {final_report_path}: {e}")
+            # Fallback to printing to console if file write fails
+            print("\n--- Part 1 Complete: Full Analysis Report (fallback) ---")
+            print(report_output)
+            print("--- End of Report ---")
+    else:
+        # No args.output_file provided, print to console
         print("\n--- Part 1 Complete: Full Analysis Report ---")
         print(report_output)
         print("--- End of Report ---")
-    else:
-        try:
-            with open(args.output_file, 'w') as f:
-                f.write(report_output)
-            print(f"\n--- Part 1 Complete: Full Analysis Report saved to {args.output_file} ---")
-        except IOError as e:
-            print(f"Error writing report to file {args.output_file}: {e}")
-            # Fallback to printing to console
-            print("\n--- Part 1 Complete: Full Analysis Report ---")
-            print(report_output)
-            print("--- End of Report ---")
 
     return report_text, all_docs # Return original text report for Q&A context
 
@@ -410,12 +423,14 @@ if __name__ == "__main__":
     # Replace potential problematic characters in project_name for directory naming
     safe_project_name = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in project_name)
 
-    artifact_dir_name = f"{safe_project_name}_{timestamp}"
-    project_specific_artifact_dir = os.path.join(analysis_reports_base_dir, artifact_dir_name)
+    # Directory for this specific project's persistent artifacts (cache, DB)
+    # This name does NOT include a timestamp, so it's reused across runs for the same project.
+    project_artifact_dir = os.path.join(analysis_reports_base_dir, safe_project_name)
 
-    os.makedirs(project_specific_artifact_dir, exist_ok=True)
+    os.makedirs(project_artifact_dir, exist_ok=True)
     if args.debug:
-        print(f"  [DEBUG Artifacts] Artifacts for this session will be stored in: {project_specific_artifact_dir}")
+        print(f"  [DEBUG Artifacts] Project artifacts (cache, DB) will be stored in: {project_artifact_dir}")
+    # Timestamp will be used for report filenames if they are saved.
     # --- End artifact storage directory ---
 
     llm, embeddings = None, None

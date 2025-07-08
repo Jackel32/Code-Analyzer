@@ -104,32 +104,41 @@ Command-Line Arguments
 *Note: The screenshot shows an older version. New features like more languages and output options are now available.*
 
 Generated Artifacts
-The analyzer stores its generated data (cache and vector database for Q&A) outside of the project you are analyzing. This keeps your project directory clean.
+The analyzer stores its generated data (cache, vector database, and report outputs) outside of the project you are analyzing. This helps keep your project directory clean and organizes analysis data centrally.
 
-1.  **`Analysis Reports` Directory**: A folder named `Analysis Reports` is created in the same directory where the `analyzer.py` script is located. If it doesn't exist, it will be created automatically (provided the script has write permissions to its own directory).
-2.  **Session-Specific Subdirectory**: Inside `Analysis Reports`, a unique subdirectory is created for each analysis run. This subdirectory is named using the pattern: `ProjectName_YYYYMMDD-HHMMSS` (e.g., `my-app_20231027-153000`).
-    *   `ProjectName` is derived from the name of the directory specified in the `--path` argument.
-    *   `YYYYMMDD-HHMMSS` is the timestamp of when the analysis started.
-3.  **Artifacts within Session Directory**: Inside this session-specific subdirectory, you will find:
-    *   `.analyzer_cache.json`: Stores cached analysis results for individual files to speed up subsequent runs for this specific analysis session.
-    *   `code_db/`: A directory containing the vector database used for the interactive Q&A session for this analysis.
+1.  **`Analysis Reports` Directory**:
+    *   A folder named `Analysis Reports` is created in the same directory where the `analyzer.py` script is located.
+    *   This directory will house all data related to different analysis sessions.
+    *   *Requirement*: The script needs write permissions in its own directory to create `Analysis Reports` and its subdirectories.
+
+2.  **Project-Specific Subdirectory**:
+    *   Inside `Analysis Reports`, a subdirectory is created for each unique project path you analyze.
+    *   The name of this subdirectory is derived from the base name of your project's path (e.g., if you analyze `/path/to/my-app`, a folder named `my-app` will be created here). Special characters in the project name are sanitized.
+    *   This project-specific folder stores shared data across multiple analysis runs for that same project.
+
+3.  **Artifacts within Project-Specific Directory**:
+    *   `.analyzer_cache.json`: This file, located directly inside the project-specific folder (e.g., `Analysis Reports/my-app/.analyzer_cache.json`), stores cached analysis results for individual files of that project. This cache is reused and updated across multiple analysis runs of the *same project*, speeding up subsequent analyses.
+    *   `code_db/`: This directory, also inside the project-specific folder (e.g., `Analysis Reports/my-app/code_db/`), contains the vector database for the project. This database is also reused and updated, allowing the Q&A session to draw upon an ever-improving understanding of the codebase across runs.
+    *   **Report Output Files**: If you use the `--output-file <filename.ext>` argument, the generated report (e.g., HTML, JSON) is saved *inside this project-specific folder*. To prevent overwriting reports from different runs, the filename is prefixed with a timestamp: `YYYYMMDD-HHMMSS_<filename.ext>`. For example, `Analysis Reports/my-app/20231027-153000_report.html`.
 
 **Example Structure:**
 ```
 /path/to/Code_Analysis_Folder/
 ├── analyzer.py
 ├── Analysis Reports/
-│   ├── MyProject_20231026-100000/
-│   │   ├── .analyzer_cache.json
-│   │   └── code_db/
-│   │       └── ... (ChromaDB files)
-│   └── AnotherProject_20231027-110000/
+│   ├── my-app/  <----------------------- For project '/path/to/my-app'
+│   │   ├── .analyzer_cache.json  <------ Shared cache for my-app
+│   │   ├── code_db/  <------------------ Shared Q&A DB for my-app
+│   │   │   └── ... (ChromaDB files)
+│   │   ├── 20231027-153000_report.html <- Report from one run
+│   │   └── 20231027-160000_analysis.json <- Report from another run
+│   └── another-project/ <--------------- For project '/path/to/another-project'
 │       ├── .analyzer_cache.json
 │       └── code_db/
 └── ... (other files)
 ```
 
-You can safely delete any session-specific subdirectory (e.g., `MyProject_20231026-100000/`) if you no longer need its cache or Q&A database. Each analysis run is independent due to the timestamped folder.
+You can safely delete any project-specific subdirectory (e.g., `Analysis Reports/my-app/`) if you want to clear all cached data and Q&A history for that project.
 
 How It Works
 The tool operates in three main stages:
